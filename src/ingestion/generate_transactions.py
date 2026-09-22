@@ -14,13 +14,31 @@ SEED = 42
 random.seed(SEED)
 np.random.seed(SEED)
 
-START_DATE = datetime(2026, 1, 1)
-END_DATE = datetime(2026, 8, 31)
+MODE = "DEV"
 
-CURRENCY_BY_COUNTRY = {
-    "Nigeria": "NGN",
-    "Ghana": "GHS",
-}
+DEV_START_DATE = datetime(2026, 1, 1)
+DEV_END_DATE = datetime(2026, 1, 30)
+
+FULL_START_DATE = datetime(2026, 1, 1)
+FULL_END_DATE = datetime(2026, 8, 31)
+
+
+# ============================================================
+# ACTIVE DATE RANGE
+# ============================================================
+
+if MODE == "DEV":
+    START_DATE = DEV_START_DATE
+    END_DATE = DEV_END_DATE
+
+elif MODE == "FULL":
+    START_DATE = FULL_START_DATE
+    END_DATE = FULL_END_DATE
+
+else:
+    raise ValueError(
+        "MODE must be either 'DEV' or 'FULL'."
+    )
 
 
 # ============================================================
@@ -73,6 +91,54 @@ CHANNELS_BY_TYPE = {
 
 
 # ============================================================
+# TIME-OF-DAY DISTRIBUTIONS
+# ============================================================
+
+TIME_BUCKETS = {
+    "NIGHT": (0, 5),
+    "MORNING": (6, 8),
+    "DAYTIME": (9, 16),
+    "EVENING": (17, 20),
+    "LATE_EVENING": (21, 23),
+}
+
+
+TIME_WEIGHTS_BY_TYPE = {
+    "P2P_TRANSFER": {
+        "NIGHT": 0.05,
+        "MORNING": 0.15,
+        "DAYTIME": 0.40,
+        "EVENING": 0.30,
+        "LATE_EVENING": 0.10,
+    },
+
+    "MERCHANT_PAYMENT": {
+        "NIGHT": 0.02,
+        "MORNING": 0.15,
+        "DAYTIME": 0.45,
+        "EVENING": 0.33,
+        "LATE_EVENING": 0.05,
+    },
+
+    "CARD_PAYMENT": {
+        "NIGHT": 0.03,
+        "MORNING": 0.15,
+        "DAYTIME": 0.45,
+        "EVENING": 0.32,
+        "LATE_EVENING": 0.05,
+    },
+
+    "CASH_WITHDRAWAL": {
+        "NIGHT": 0.01,
+        "MORNING": 0.20,
+        "DAYTIME": 0.50,
+        "EVENING": 0.27,
+        "LATE_EVENING": 0.02,
+    },
+}
+
+
+# ============================================================
 # TRANSACTION STATUS
 # ============================================================
 
@@ -116,13 +182,12 @@ customer_profiles = pd.read_csv(
 # PREPARE DATA
 # ============================================================
 
-customers["account_created_at"] = pd.to_datetime(
-    customers["account_created_at"]
-)
-
-customer_profiles["expected_daily_transactions"] = (
-    customer_profiles["expected_daily_transactions"]
-    .astype(float)
+customer_profiles[
+    "expected_daily_transactions"
+] = (
+    customer_profiles[
+        "expected_daily_transactions"
+    ].astype(float)
 )
 
 
@@ -160,26 +225,76 @@ customer_map = (
 )
 
 
+customer_ids = customers[
+    "customer_id"
+].tolist()
+
+
 # ============================================================
-# GENERATE RANDOM TRANSACTION TIME
+# SELECT TIME BUCKET
+# ============================================================
+
+def select_time_bucket(transaction_type):
+
+    buckets = list(
+        TIME_WEIGHTS_BY_TYPE[
+            transaction_type
+        ].keys()
+    )
+
+    probabilities = list(
+        TIME_WEIGHTS_BY_TYPE[
+            transaction_type
+        ].values()
+    )
+
+    return random.choices(
+        buckets,
+        weights=probabilities,
+        k=1
+    )[0]
+
+
+# ============================================================
+# GENERATE TRANSACTION TIME
 # ============================================================
 
 def generate_transaction_time(
-    transaction_date
+    transaction_date,
+    transaction_type
 ):
     """
-    Generate a random timestamp during a given day.
+    Generate a transaction timestamp using
+    transaction-type-specific time-of-day behavior.
     """
 
-    seconds_in_day = 24 * 60 * 60 - 1
+    time_bucket = select_time_bucket(
+        transaction_type
+    )
 
-    random_seconds = random.randint(
+    start_hour, end_hour = (
+        TIME_BUCKETS[time_bucket]
+    )
+
+    hour = random.randint(
+        start_hour,
+        end_hour
+    )
+
+    minute = random.randint(
         0,
-        seconds_in_day
+        59
+    )
+
+    second = random.randint(
+        0,
+        59
     )
 
     return transaction_date + timedelta(
-        seconds=random_seconds
+        hours=hour,
+        minutes=minute,
+        seconds=second,
     )
 
 
@@ -191,10 +306,6 @@ def generate_amount(
     transaction_type,
     typical_amount
 ):
-    """
-    Generate a transaction amount around
-    the customer's typical transaction amount.
-    """
 
     if transaction_type == "CASH_WITHDRAWAL":
         sigma = 0.45
@@ -206,7 +317,6 @@ def generate_amount(
         sigma = 0.40
 
     else:
-        # P2P_TRANSFER
         sigma = 0.50
 
     variation = np.random.lognormal(
@@ -229,6 +339,7 @@ def generate_amount(
 def select_channel(
     transaction_type
 ):
+
     channels = list(
         CHANNELS_BY_TYPE[
             transaction_type
@@ -257,9 +368,6 @@ def generate_transaction(
     customer_id,
     transaction_date
 ):
-    """
-    Generate one transaction for a customer.
-    """
 
     customer = customer_map[
         customer_id
@@ -269,10 +377,17 @@ def generate_transaction(
         customer_id
     ]
 
-    country = customer["country"]
-    city = customer["city"]
+    country = customer[
+        "country"
+    ]
 
-    currency = profile["currency"]
+    city = customer[
+        "city"
+    ]
+
+    currency = profile[
+        "currency"
+    ]
 
     # --------------------------------------------------------
     # Transaction type
@@ -351,8 +466,11 @@ def generate_transaction(
     # Timestamp
     # --------------------------------------------------------
 
-    transaction_time = generate_transaction_time(
-        transaction_date
+    transaction_time = (
+        generate_transaction_time(
+            transaction_date,
+            transaction_type
+        )
     )
 
     return {
@@ -375,7 +493,9 @@ def generate_transaction(
 # GENERATE TRANSACTIONS
 # ============================================================
 
-print("Generating transactions...")
+print(
+    f"Generating transactions in {MODE} mode..."
+)
 
 transactions = []
 
@@ -385,14 +505,6 @@ current_date = START_DATE
 
 
 while current_date <= END_DATE:
-
-    # --------------------------------------------------------
-    # Generate transactions for each customer
-    # --------------------------------------------------------
-
-    customer_ids = customers[
-        "customer_id"
-    ].tolist()
 
     for customer_id in customer_ids:
 
@@ -404,18 +516,9 @@ while current_date <= END_DATE:
             "expected_daily_transactions"
         ]
 
-        # ----------------------------------------------------
-        # Sample number of transactions for this customer
-        # on this particular day using Poisson distribution.
-        # ----------------------------------------------------
-
         number_of_transactions = np.random.poisson(
             lam=expected_daily_transactions
         )
-
-        # ----------------------------------------------------
-        # Generate individual transactions
-        # ----------------------------------------------------
 
         for _ in range(
             number_of_transactions
@@ -450,7 +553,7 @@ transactions_df = pd.DataFrame(
 
 
 # ============================================================
-# SAVE DATA
+# SAVE
 # ============================================================
 
 output_path = (
@@ -470,6 +573,15 @@ transactions_df.to_csv(
 print("\nTransaction generation complete.")
 
 print(
+    f"Mode: {MODE}"
+)
+
+print(
+    f"Date range: "
+    f"{START_DATE.date()} → {END_DATE.date()}"
+)
+
+print(
     f"Number of transactions: "
     f"{len(transactions_df):,}"
 )
@@ -482,7 +594,6 @@ print(
     ].value_counts()
 )
 
-
 print("\nChannel distribution:")
 
 print(
@@ -491,7 +602,6 @@ print(
     ].value_counts()
 )
 
-
 print("\nCurrency distribution:")
 
 print(
@@ -499,7 +609,6 @@ print(
         "currency"
     ].value_counts()
 )
-
 
 print("\nTransactions by activity profile:")
 
@@ -524,15 +633,18 @@ print(
     profile_summary
 )
 
-
-print("\nAmount statistics by currency:")
+print("\nTransaction hour distribution:")
 
 print(
-    transactions_df
-    .groupby("currency")["amount"]
-    .describe()
+    pd.to_datetime(
+        transactions_df[
+            "transaction_time"
+        ]
+    )
+    .dt.hour
+    .value_counts()
+    .sort_index()
 )
-
 
 print(
     f"\nSaved to: {output_path}"
